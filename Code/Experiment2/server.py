@@ -14,6 +14,18 @@ class SerialServer:
         self.ser = None
         self.running = False
         self.recv_thread = None
+        self.debug = True
+
+    def _log(self, direction, payload):
+        """调试输出，带时间戳和方向"""
+        if not self.debug:
+            return
+        ts = time.strftime('%H:%M:%S')
+        if isinstance(payload, bytes):
+            safe = payload.decode('utf-8', errors='ignore')
+        else:
+            safe = str(payload)
+        print(f"[DEBUG {ts}] {direction}: {safe}")
         
     def get_available_ports(self):
         """获取可用串口列表"""
@@ -54,7 +66,7 @@ class SerialServer:
                 if isinstance(data, str):
                     data = data.encode('utf-8')
                 self.ser.write(data)
-                print(f"[发送] {data.decode('utf-8', errors='ignore')}")
+                self._log('SEND', data)
                 return True
             except Exception as e:
                 print(f"[错误] 发送失败: {e}")
@@ -98,7 +110,7 @@ class SerialServer:
                 if self.ser.in_waiting > 0:
                     data = self.ser.readline()
                     if data:
-                        print(f"[接收] {data.decode('utf-8', errors='ignore').strip()}")
+                        self._log('RECV', data)
                         
                         # 处理请求并返回响应
                         response, should_quit = self.process_request(data)

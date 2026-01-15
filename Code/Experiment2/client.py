@@ -14,6 +14,18 @@ class SerialClient:
         self.ser = None
         self.receiving = False
         self.recv_thread = None
+        self.debug = True
+
+    def _log(self, direction, payload):
+        """调试输出，带时间戳和方向"""
+        if not self.debug:
+            return
+        ts = time.strftime('%H:%M:%S')
+        if isinstance(payload, bytes):
+            safe = payload.decode('utf-8', errors='ignore')
+        else:
+            safe = str(payload)
+        print(f"[DEBUG {ts}] {direction}: {safe}")
         
     def get_available_ports(self):
         """获取可用串口列表"""
@@ -62,7 +74,7 @@ class SerialClient:
                 if not request.endswith(b'\n'):
                     request += b'\n'
                 self.ser.write(request)
-                print(f"[发送] {request.decode('utf-8', errors='ignore').strip()}")
+                self._log('SEND', request.strip(b'\n'))
                 return True
             except Exception as e:
                 print(f"[错误] 发送失败: {e}")
@@ -76,8 +88,7 @@ class SerialClient:
                 if self.ser.in_waiting > 0:
                     data = self.ser.readline()
                     if data:
-                        response = data.decode('utf-8', errors='ignore').strip()
-                        print(f"[接收] {response}")
+                        self._log('RECV', data)
                 else:
                     time.sleep(0.01)
             except Exception as e:

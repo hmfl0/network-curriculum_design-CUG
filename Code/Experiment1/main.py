@@ -96,10 +96,10 @@ class SerialAssistant:
                     if not self.test_mode:
                         try:
                             decoded = data.decode('utf-8')
-                            print(f"\n[Received] {decoded}")
+                            # print(f"\n[Received] {decoded}")
                             sys.stdout.flush()
                         except UnicodeDecodeError:
-                            print(f"\n[Received Raw] {data}")
+                            # print(f"\n[Received Raw] {data}")
                             sys.stdout.flush()
                             
                 time.sleep(0.01) # Small sleep to reduce CPU usage
