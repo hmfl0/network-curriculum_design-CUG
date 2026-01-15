@@ -212,7 +212,10 @@ class RouterNode:
                     }
 
     def _on_recv_dv(self, sender_id, dv_json, port):
-        """收到距离向量，运行 Bellman-Ford"""
+        """
+        收到距离向量，运行 Bellman-Ford
+        优化：增加 Triggered Update 机制
+        """
         try:
             neighbor_dv = json.loads(dv_json)
         except:
@@ -229,26 +232,30 @@ class RouterNode:
                 cost_neighbor_to_dest = info.get('cost', 999)
                 # 经由该邻居到达目标的总开销 = 1 (我到邻居) + cost (邻居到目标)
                 new_cost = 1 + cost_neighbor_to_dest
+                if new_cost > 999: new_cost = 999
                 
                 current_route = self.routing_table.get(dest)
                 
-                # 情况A: 发现新目标
+                # 情况A: 发现新目标 (且不是不可达)
                 if not current_route:
-                    self.routing_table[dest] = {
-                        'cost': new_cost,
-                        'next_hop_port': port,
-                        'next_hop_id': sender_id
-                    }
-                    updated = True
-                    # print(f"[路由新增] -> {dest} cost={new_cost} via {sender_id}")
+                    if new_cost < 999:
+                        self.routing_table[dest] = {
+                            'cost': new_cost,
+                            'next_hop_port': port,
+                            'next_hop_id': sender_id
+                        }
+                        updated = True
+                        # print(f"[路由新增] -> {dest} cost={new_cost} via {sender_id}")
                 
                 # 情况B: 现有路由的下一跳就是该邻居
                 # 必须更新（哪怕cost变大了，因为邻居那边的路况变了）
                 elif current_route['next_hop_id'] == sender_id:
+                    # 如果原先是可达的，现在变不可达(999)，或者cost变化
                     if current_route['cost'] != new_cost:
                         current_route['cost'] = new_cost
                         updated = True
                         # print(f"[路由更新] -> {dest} cost变更为 {new_cost}")
+                        # 如果不可达了，不立即删除，而是保留999以便毒性逆转传播
 
                 # 情况C: 现有路由下一跳不是这个邻居，但这个邻居提供了更短路径
                 elif new_cost < current_route['cost']:
@@ -260,10 +267,71 @@ class RouterNode:
                     updated = True
                     # print(f"[路由优化] -> {dest} via {sender_id} (cost {current_route['cost']}->{new_cost})")
 
-            # 2. (进阶) 如果邻居告知某些目的地它是不可达的(cost=inf)，这里简化处理，不做 Poison Reverse
+            # 2. 检查是否有路由需要毒化 (邻居如果不在通告列表中，说明它也到不了了? 
+            # 通常DV包含所有已知路由。如果邻居没发某个dest，可能意外丢失? 
+            # 严格DV通常发全量。这里假设neighbor_dv是全量的。
+            # 若sender_id是我们去往某dest的下一跳，但他没通告这个dest，
+            # 说明他到不了了。
+            for dest in list(self.routing_table.keys()):
+                if dest == self.my_id: continue
+                route = self.routing_table[dest]
+                if route['next_hop_id'] == sender_id:
+                    # 如果邻居通告里没有这个 destination
+                    if dest not in neighbor_dv:
+                        # 视为不可达
+                        if route['cost'] != 999:
+                            route['cost'] = 999
+                            updated = True
+
+            if updated:
+                # 触发更新 (Triggered Update)
+                # 在锁外启动发送线程或直接调用发送（需注意死锁，这里_send_dv_updates只读锁，注意重入问题）
+                # 由于我们在rt_lock内，不能直接调用需要rt_lock的方法。
+                # 最好释放锁后再发，或者使用的锁是RLock。
+                # threading.Lock不是RLock。这里简单处理：用标志位。
+                pass
+        
+        if updated:
+            # print("路由表更新，触发立即广播...")
+            self._send_dv_updates()
+
+    def _send_dv_updates(self):
+        """发送路由更新（支持毒性逆转 Poison Reverse）"""
+        # 1. 准备快照
+        with self.rt_lock:
+            # 复制一份当前路由表用于计算
+            snapshot = {k:v.copy() for k,v in self.routing_table.items()}
+        
+        # 2. 针对每个端口构造定制化的DV (Poison Reverse)
+        # 核心算法：如果我到达Dest的下一跳是Neighbor X，
+        # 那么我告诉Neighbor X的信息中，Dest的Cost必须是无穷大。
+        
+        # 为了避免长时间占用 active_ports 的遍历，我们在循环中处理
+        current_ports = list(self.active_ports.keys())
+        
+        for port_out in current_ports:
+            # 找出这个端口连接的邻居ID
+            neighbor_id = None
+            with self.neighbors_lock:
+                 if port_out in self.neighbors:
+                     neighbor_id = self.neighbors[port_out]['id']
             
-            # 如果路由表有变动，可以在下一次周期广播，或立即触发广播(Triggered Update)
-            # 这里简单起见，等待周期广播
+            # 构建针对该端口的DV
+            custom_dv = {}
+            for dest, info in snapshot.items():
+                cost = info['cost']
+                
+                # 毒性逆转逻辑 (Poison Reverse)
+                # 如果去往 dest 的下一跳就是这个端口对应的邻居 (或者就是该端口)
+                if info.get('next_hop_port') == port_out:
+                    cost = 999 # 谎报为无穷大
+                
+                custom_dv[dest] = {'cost': cost}
+            
+            # 发送
+            dv_str = json.dumps(custom_dv)
+            packet = f"{TYPE_DV}{SEPARATOR}{self.my_id}{SEPARATOR}{dv_str}"
+            self._send_to_port(port_out, packet)
 
     def _on_recv_data(self, src_id, dst_id, payload):
         """收到数据包"""
@@ -300,22 +368,8 @@ class RouterNode:
     def _task_broadcast_dv(self):
         """定期广播路由表 (DV)"""
         while self.running:
-            # 构建路由表快照
-            dv_snapshot = {}
-            with self.rt_lock:
-                for dest, info in self.routing_table.items():
-                    # 水平分割 (Split Horizon) 可以在发送时针对不同接口过滤
-                    # 这里为了简化，发送完整表，开销仅为数字
-                    dv_snapshot[dest] = {'cost': info['cost']}
-            
-            dv_str = json.dumps(dv_snapshot)
-            packet = f"{TYPE_DV}{SEPARATOR}{self.my_id}{SEPARATOR}{dv_str}"
-            
-            for port in list(self.active_ports.keys()):
-                # 进阶: 这里可以实现 Split Horizon，即不向 next_hop 所在的端口通告去往该目的地的路由
-                # 但基础 DV 算法不强制要求
-                self._send_to_port(port, packet)
-                
+            # 调用封装好的发送逻辑 (包含 Poison Reverse)
+            self._send_dv_updates()
             time.sleep(DV_INTERVAL)
 
     def _task_check_timeout(self):
