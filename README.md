@@ -22,37 +22,22 @@ python Code/Experiment1/main.py
 
 ## Experiment 2 : 双机通信实验
 
-#### （一）实验目标
-1. 掌握双机串口通信的物理层连接方法（交叉连接）；
-2. 理解C/S模式的通信逻辑（请求/响应机制）；
-3. 实现双机间的双向数据传输。
+-   本实验主要是要在双机环境下实现C/S模式的通信 验证串口连接的可靠性
+-   需要将两台设备通过串口交叉相连（TX接RX RX接TX）
+-   实验包含两个独立程序 需要分别运行
+    -   Server端：持续监听端口 解析请求并返回数据
+    -   Client端：用户交互界面 发送指令并显示回显
+-   请务必先启动Server端 再启动Client端 并在启动时选择正确的COM口
 
-#### （二）实验器材
-| 器材名称 | 数量 | 备注 |
-|----------|------|------|
-| Windows系统计算机 | 2台 | 分别命名为PC1、PC2，均支持USB接口 |
-| USB转串口接口卡 | 2块 | 每台电脑1块，含驱动程序 |
-| RS-232交叉通信线 | 1根 | 确保PC1_TX→PC2_RX、PC2_TX→PC1_RX |
+```shell
+# Server Side
+python Code/Experiment2/server.py
+```
 
-#### （三）实验软件
-同实验一。
-
-#### （四）实验步骤
-1. **硬件连接**：
-   - 两台电脑分别插入USB转串口接口卡，安装驱动并查询各自的COM口编号（如PC1为COM4，PC2为COM5）；
-   - 使用交叉通信线连接两块接口卡：PC1接口卡的TX引脚连接PC2接口卡的RX引脚，PC2接口卡的TX引脚连接PC1接口卡的RX引脚。
-2. **软件调试**：
-   - 两台电脑均打开串口调试助手，按相同参数配置（波特率9600、数据位8等），分别选择各自的COM口并打开；
-   - PC1发送测试数据（如“Hello PC2”），观察PC2接收区是否正常接收；反之，PC2发送数据，验证PC1接收功能（确认双机连接正常）。
-3. **程序编写**：
-   - 基于实验一的串口功能代码，扩展C/S模式逻辑；
-   - 服务器端（Server）功能：监听指定COM口，接收客户端请求，处理后返回响应（如接收“请求时间”则返回当前系统时间）；
-   - 客户端（Client）功能：连接服务器端对应的COM口，发送请求数据，接收并显示服务器响应；
-   - 交互流程：客户端发起请求→服务器端接收并解析→服务器端返回响应→客户端显示响应（支持多次请求/响应）。
-4. **拓展任务**：
-   - 服务器拒绝请求：实现基于请求类型（如非法指令）或客户端权限的请求拒绝机制（返回拒绝响应）；
-   - 客户端超时处理：当服务器无响应时，客户端设置超时时间（如5秒），超时后提示“请求超时”并可重新发起请求；
-   - 客户端断开检测：服务器端通过心跳机制（定期接收客户端状态包）或超时检测，判断客户端是否已断开连接，释放资源。
+```shell
+# Client Side
+python Code/Experiment2/client.py
+```
 
 ## 实验三：简单拓扑的多机通信实验（链路层）
 #### （一）实验目标
@@ -72,17 +57,22 @@ python Code/Experiment1/main.py
 
 #### （四）实验步骤
 1. **硬件连接**：
-   - 按树形拓扑连接4台PC：选择1台PC作为根节点（如PC1），其余3台作为叶子节点（PC2~PC4）；
+   - ![image-20260115201212426](./README_pic/image-20260115201212426.png)
+   - 按树形拓扑连接4台PC：选择1台PC作为根节点（如PC1），其余3台作为叶子节点（PC2~PC4)；
    - 根节点PC1通过3块接口卡分别连接PC2~PC4（每块接口卡对应1台叶子节点），连接方式为交叉连接（PC1_TX→PC2_RX，PC2_TX→PC1_RX，以此类推）；
    - 所有设备安装接口卡驱动，查询各自用于连接的COM口编号（如PC1连接PC2用COM4，连接PC3用COM5，连接PC4用COM6）。
+   
 2. **软件调试**：
    - 每台PC打开串口调试助手，配置所有已连接的COM口参数（波特率9600等）；
    - 测试相邻设备通信：PC1向PC2发送数据，验证PC2接收；PC3向PC1发送数据，验证PC1接收（确保所有链路连接正常）。
+   - PC2向PC3发送数据 会经过PC1 , PC1发现是PC3在对应端口之后转发
+   
 3. **程序编写**：
    - 基于实验二的双机通信代码，扩展多串口管理功能（每台PC需支持同时管理多个COM口）；
    - 核心功能：任意两台PC间可直接发送数据（如PC2向PC3发送数据，需通过根节点PC1转发，链路层自动处理帧转发逻辑）；
    - 设备标识：为每台PC分配唯一标识（如ID001~ID004），数据帧中需包含源ID、目标ID；
    - 转发逻辑：根节点接收数据帧后，根据目标ID转发至对应叶子节点；叶子节点仅接收目标ID为自身的数据帧。
+
 4. **拓展任务**：
    - 自动发现可达设备：通过洪泛法（每台设备定期广播自身ID和连接状态），实现无需人工干预的可达设备列表更新；
    - 故障容错：当某台叶子节点（如PC2）断开连接时，确保其他设备（PC3~PC4）间的通信不受影响；当根节点断开时，需提示网络中断（树形拓扑无备用路径）。
@@ -188,102 +178,3 @@ python Code/Experiment1/main.py
 4. **拓展任务**：
    - 批量ping测试：实现同时向多个目标设备发送ping请求，批量输出可达性结果；
    - traceroute路径优化：结合实验四的路由算法，显示最优路径与备选路径的追踪结果。
-
-# 附录：串口读写参考代码
-
-## Python版（多线程实现COM4/COM5收发）
-```python
-import serial
-import threading
-import time
-
-# 串口接收线程类
-class SerialReader(threading.Thread):
-    def __init__(self, port, baudrate=9600):
-        super().__init__()
-        self.port = port          # 串口名称
-        self.baudrate = baudrate  # 波特率
-        self.ser = None           # 串口对象
-        self.running = True       # 线程运行标志
-
-    def run(self):
-        """线程运行函数：持续读取串口数据"""
-        try:
-            # 打开串口，配置超时时间1秒
-            self.ser = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                bytesize=serial.EIGHTBITS,
-                stopbits=serial.STOPBITS_ONE,
-                parity=serial.PARITY_NONE,
-                timeout=1
-            )
-            print(f"串口 {self.port} 已打开，开始接收数据...")
-
-            while self.running:
-                # 检测串口缓冲区是否有数据
-                if self.ser.in_waiting > 0:
-                    # 读取数据并解码（UTF-8，忽略无法解码的字符）
-                    data = self.ser.readline().decode('utf-8', errors='ignore').rstrip()
-                    print(f"串口 {self.port} 接收：{data}")
-                time.sleep(0.1)  # 降低CPU占用率
-        except Exception as e:
-            print(f"串口 {self.port} 接收线程异常：{str(e)}")
-        finally:
-            # 关闭串口
-            if self.ser and self.ser.is_open:
-                self.ser.close()
-                print(f"串口 {self.port} 已关闭")
-
-    def stop(self):
-        """停止线程"""
-        self.running = False
-
-# 串口发送函数
-def send_data(port, baudrate=9600, data=""):
-    """向指定串口发送数据"""
-    if not data:
-        print("发送数据不能为空")
-        return
-
-    try:
-        # 打开串口，发送数据后立即关闭
-        with serial.Serial(
-            port=port,
-            baudrate=baudrate,
-            bytesize=serial.EIGHTBITS,
-            stopbits=serial.STOPBITS_ONE,
-            parity=serial.PARITY_NONE,
-            timeout=1
-        ) as ser:
-            ser.write(data.encode('utf-8'))
-            print(f"串口 {port} 发送：{data}")
-    except Exception as e:
-        print(f"串口 {port} 发送失败：{str(e)}")
-
-def main():
-    # 创建并启动两个串口接收线程（COM4和COM5）
-    reader4 = SerialReader(port='COM4', baudrate=9600)
-    reader5 = SerialReader(port='COM5', baudrate=9600)
-    reader4.start()
-    reader5.start()
-
-    # 主线程发送测试数据（每2秒发送一次，共发送5次）
-    try:
-        for i in range(1, 6):
-            send_data('COM4', data=f"Hello from COM4 ({i})")
-            send_data('COM5', data=f"Hello from COM5 ({i})")
-            time.sleep(2)
-    except KeyboardInterrupt:
-        print("\n接收到中断信号，停止程序...")
-    finally:
-        # 停止接收线程并等待线程结束
-        reader4.stop()
-        reader5.stop()
-        reader4.join()
-        reader5.join()
-        print("所有线程已停止")
-
-if __name__ == '__main__':
-    main()
-```
