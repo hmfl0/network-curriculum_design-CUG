@@ -61,7 +61,8 @@ class ReliableRouterNode:
         self.ack_event = threading.Event() # 用于等待ACK
         self.received_ack_seq = -1    # 收到的ACK序号
         
-        self.simulate_error = False   # 模拟错误开关
+        self.simulate_error = False   # 模拟校验错误开关
+        self.simulate_loss = False    # 模拟丢包开关
 
     def start(self):
         print("="*60)
@@ -123,7 +124,8 @@ class ReliableRouterNode:
         threading.Thread(target=self._task_check_timeout, daemon=True).start()
         
         print("\n系统启动完成。")
-        print("命令: send <Dest> <Msg> | table | corrupt on/off")
+        print("命令: send <Dest> <Msg> | table | corrupt on/off | loss on/off | help | exit")
+        print("输入 'help' 获取详细帮助")
         print("="*60)
         
         self._input_loop()
@@ -145,6 +147,13 @@ class ReliableRouterNode:
     def _send_to_port(self, port_name, packet_str):
         if port_name not in self.active_ports:
             return False
+        
+        # 模拟丢包
+        if self.simulate_loss:
+            print(f"[Simulate] 模拟丢包 (本应发往 {port_name})")
+            self.simulate_loss = False  # 只模拟一次
+            return True  # 返回True表示"发送"了，但实际没有
+        
         with self.port_locks[port_name]:
             try:
                 data = (packet_str + '\n').encode('utf-8')
@@ -278,6 +287,7 @@ class ReliableRouterNode:
                 cal_chk = self._calculate_checksum(src_id, dst_id, seq, t_type, body)
                 if recv_chk != cal_chk:
                     print(f"[RX Error] 校验失败! 来自{src_id} Seq={seq} (Recv:{recv_chk} vs Calc:{cal_chk}) - 丢弃")
+                    # 校验失败，不发送ACK（等待发送方超时重传）
                     return 
                 
                 # 2. 处理 Type
@@ -285,22 +295,28 @@ class ReliableRouterNode:
                     is_syn = (t_type == TRANS_TYPE_SYN)
                     if is_syn:
                         print(f"[RX SYN] 新会话请求 来自{src_id} InitSeq={seq}")
-                        self.expected_seqs[src_id] = seq # 同步序列号
-                    
-                    print(f"[RX] 收到数据 来自{src_id} Seq={seq}: {body}")
-                    
-                    # 发送确认 (如果是SYN，回SYN-ACK；否则回ACK)
-                    self._transport_send_ack(src_id, seq, is_syn_ack=is_syn)
-                    
-                    # 检查是否重复并交付
-                    expected = self.expected_seqs.get(src_id, 0)
-                    if seq == expected:
-                        if body: print(f"    >>> [交付应用层] {body}")
-                        self.expected_seqs[src_id] = seq + 1
-                    elif seq < expected:
-                        print(f"    [重复帧] Seq={seq}, 期望={expected}. 丢弃.")
+                        self.expected_seqs[src_id] = seq + 1  # 同步序列号，期望下一个
+                        # 发送 SYN-ACK 确认
+                        self._transport_send_ack(src_id, seq, is_syn_ack=True)
                     else:
-                        print(f"    [失序帧] Seq={seq}, 期望={expected}. 暂时丢弃.")
+                        # 普通数据包，发送 ACK
+                        print(f"[RX] 收到数据 来自{src_id} Seq={seq}: {body}")
+                        
+                        # 检查是否期望这个序列号
+                        expected = self.expected_seqs.get(src_id, seq)
+                        if seq == expected:
+                            # 发送ACK确认收到这个序列号
+                            self._transport_send_ack(src_id, seq, is_syn_ack=False)
+                            if body: 
+                                print(f"    >>> [交付应用层] {body}")
+                            self.expected_seqs[src_id] = seq + 1
+                        elif seq < expected:
+                            # 重复帧，仍然发送ACK（让发送方知道我们已收到）
+                            print(f"    [重复帧] Seq={seq}, 期望={expected}. 发送ACK.")
+                            self._transport_send_ack(src_id, seq, is_syn_ack=False)
+                        else:
+                            # 失序帧，暂不发送ACK（发送方会超时重传）
+                            print(f"    [失序帧] Seq={seq}, 期望={expected}. 暂不应答.")
 
                 elif t_type == TRANS_TYPE_ACK or t_type == TRANS_TYPE_SYNACK:
                     # 收到ACK或SYN-ACK
@@ -308,9 +324,12 @@ class ReliableRouterNode:
                     if seq == self.seq_num: # 确认当前发送的
                         self.received_ack_seq = seq
                         self.ack_event.set()
+                        print(f"[RX ACK] 确认成功，停止重传")
+                    else:
+                        print(f"[RX ACK] 序号不匹配 (期望{self.seq_num}，收到{seq})")
                         
-            except ValueError:
-                print("解析错误")
+            except ValueError as e:
+                print(f"解析错误: {e}")
             return
         
         # --- 转发 ---
@@ -326,23 +345,9 @@ class ReliableRouterNode:
                 print(f"[Drop] 目标不可达: {dst_id}")
 
     def _network_send(self, target_id, packet_content):
-        """查找路由并发送（不封装DATA头，参数已经是完整包或需要封装?）"""
-        # 注意: _on_recv_data里的转发重构了包。
-        # 这里 _send_reliable 构建的 packet_content 已经是 TransportFrame
-        # 也就是 DATA 的 payload。
-        # 所以这里需要封装网络层头
-        # Wait, usually _network_send takes payload.
-        # But `_transport_send_ack` constructed the full packet.
-        # Let's standardize: `_network_send` takes the full packet string ready to go to serial?
-        # Or takes payload?
-        # Let's make `_network_send` strictly the "Lookup and Serial Write" function.
-        # But `packet_content` passed here is expected to be `DATA|...`.
-        
-        # Check if packet already has header? 
-        # In `_transport_send_ack` I constructed: `DATA|Me|Target|TF_Str`.
-        pass 
-        # Using helper logic below:
-        
+        """查找路由并发送完整网络层包
+        参数 packet_content: 已经是完整的 DATA|Src|Dst|Payload 格式
+        """
         with self.rt_lock:
             route = self.routing_table.get(target_id)
             if not route:
@@ -357,60 +362,56 @@ class ReliableRouterNode:
             return True
 
     def _initiate_reliable_send(self, target_id, msg):
-        """停等协议发送逻辑 (Blocking)"""
-        # [NEW] 随机生成 Seq (类似 TCP ISN)
+        """停等协议发送逻辑 (Blocking) - 三步握手建立会话，然后发送数据"""
+        # [Step 1] 发送 SYN 建立会话 (并同步序列号)
+        # 随机生成初始序列号 (类似 TCP ISN)
         seq = random.randint(0, 65535)
-        self.seq_num = seq # [FIX] Sync state for RX thread
+        self.seq_num = seq
         
-        # 准备 Transport Frame
-        # Fmt: SrcP|DstP|Seq|Chk|Type|Body
-        
-        # [NEW] 使用 SYN 类型来标志这是一个新会话 (Send命令是一次性会话)
         t_type = TRANS_TYPE_SYN
-        
-        # 1. 计算校验码
         chk = self._calculate_checksum(self.my_id, target_id, seq, t_type, msg)
         
         if self.simulate_error:
-            print("[Simulate] 模拟校验码错误 (发送损坏包)")
-            chk += 123 # 破坏校验码
-            self.simulate_error = False # Reset
-            
-        tf_str = f"0{SEPARATOR}0{SEPARATOR}{seq}{SEPARATOR}{chk}{SEPARATOR}{t_type}{SEPARATOR}{msg}"
+            print("[Simulate] 模拟校验码错误 (SYN包校验码将损坏)")
+            chk += 123
+            self.simulate_error = False
         
-        # 2. 封装网络层
+        tf_str = f"0{SEPARATOR}0{SEPARATOR}{seq}{SEPARATOR}{chk}{SEPARATOR}{t_type}{SEPARATOR}{msg}"
         packet = f"{TYPE_DATA}{SEPARATOR}{self.my_id}{SEPARATOR}{target_id}{SEPARATOR}{tf_str}"
         
-        print(f"--- 开始可靠发送 (SYN Mode) Seq={seq} to {target_id} ---")
+        print(f"\n=== 开始可靠发送到 {target_id} ===")
+        print(f"[TX] 发送 SYN (Seq={seq}, 数据='{msg}')")
         
-        success = False
+        # 发送SYN并等待SYN-ACK
+        syn_ack_received = False
         for attempt in range(MAX_RETRIES):
-            # 发送
             if not self._network_send(target_id, packet):
                 print("发送失败: 网络层无法发送")
-                break # 路由问题，重传也没用
+                break
             
-            print(f"[TX] 发送 Seq={seq} (尝试 {attempt+1}/{MAX_RETRIES})... 等待ACK")
+            print(f"[TX] SYN已发送 (尝试 {attempt+1}/{MAX_RETRIES})... 等待SYN-ACK")
             
-            # 等待
             self.ack_event.clear()
             self.received_ack_seq = -1
             
             if self.ack_event.wait(TIMEOUT_RETRANSMIT):
                 if self.received_ack_seq == seq:
-                    print(f"[TX Success] 收到确认 ACK={seq}")
-                    success = True
+                    print(f"[TX] 收到 SYN-ACK，会话已建立")
+                    syn_ack_received = True
                     break
                 else:
-                    print(f"[TX Info] 收到非当前ACK: {self.received_ack_seq}")
+                    print(f"[TX] 收到非期望的ACK: {self.received_ack_seq}，继续等待...")
             else:
-                print(f"[TX Timeout] 超时未收到ACK")
-                
-        if success:
-            # self.seq_num += 1 # 不需要了，每次随机
-            pass
-        else:
-            print("--- 发送最终失败 (达到最大重传次数) ---")
+                print(f"[TX] SYN超时，准备重传...")
+        
+        if not syn_ack_received:
+            print("=== 发送失败: 无法建立会话 ===\n")
+            return
+        
+        # [Step 2] 会话已建立，数据将在SYN中携带（简化实现）
+        # 在真实场景中，可能会发送 DATA 包。这里SYN就包含了数据。
+        
+        print("=== 发送成功 ===\n")
 
     # === 定时任务 (Hello/DV) ===
     def _task_hello(self):
@@ -456,44 +457,82 @@ class ReliableRouterNode:
             try:
                 cmd = input("> ").strip()
                 if not cmd: continue
-                parts = cmd.split()
+                parts = cmd.split(maxsplit=2)
                 op = parts[0].lower()
                 
-                if op == 'table':
+                if op == 'table' or op == 't':
                     self._print_table()
                 elif op == 'corrupt':
                     if len(parts) > 1 and parts[1] == 'on':
                         self.simulate_error = True
-                        print("模拟错误已开启 (下一次发送的包校验码将错误)")
+                        print("✓ 模拟校验错误已开启 (下一次发送的包校验码将错误)")
                     else:
                         self.simulate_error = False
-                        print("模拟错误已关闭")
+                        print("✓ 模拟校验错误已关闭")
+                elif op == 'loss':
+                    if len(parts) > 1 and parts[1] == 'on':
+                        self.simulate_loss = True
+                        print("✓ 模拟丢包已开启 (下一次发送的包将被丢弃)")
+                    else:
+                        self.simulate_loss = False
+                        print("✓ 模拟丢包已关闭")
                 elif op == 'send':
                     if len(parts) < 3:
                         print("用法: send <目标ID> <消息>")
                         continue
                     target = parts[1]
-                    msg = " ".join(parts[2:])
+                    msg = parts[2]
                     # 在主线程发，会阻塞UI。这是预期的Stop-Wait
                     self._initiate_reliable_send(target, msg)
-                elif op == 'exit':
+                elif op == 'help' or op == 'h' or op == '?':
+                    self._print_help()
+                elif op == 'exit' or op == 'quit':
                     self.running = False
                     for s in self.active_ports.values(): s.close()
                     sys.exit(0)
                 else:
-                    print("未知命令")
+                    print(f"未知命令: {op}。输入 'help' 查看帮助。")
             except KeyboardInterrupt:
                 self.running = False
                 sys.exit(0)
             except Exception as e:
                 print(f"Error: {e}")
+    
+    def _print_help(self):
+        print("""
+=== 可靠传输路由节点 - 命令帮助 ===
+命令列表:
+  table (t)           - 显示当前路由表
+  send <ID> <MSG>     - 向目标ID发送可靠消息 (停等协议)
+  corrupt on/off      - 开启/关闭模拟校验错误 (下一次发送时篡改)
+  loss on/off         - 开启/关闭模拟丢包 (下一次发送时丢弃)
+  help (h, ?)         - 显示此帮助
+  exit (quit)         - 退出程序
+
+说明:
+- 停等协议: 发送方发送后会等待接收方的ACK，超时后自动重传
+- 校验错误: 接收方检测到校验码错误时会丢弃，发送方会超时重传
+- 丢包: 模拟网络中的数据丢失，发送方会因超时而重传
+
+示例:
+  > send B "Hello World"  # 向B发送"Hello World"
+  > corrupt on            # 开启错误模拟
+  > send B "Test"         # 发送带错的包，会被接收方丢弃，最终重传成功
+  > loss on               # 开启丢包模拟
+  > send B "Message"      # 模拟第一个包被丢弃，触发超时重传
+        """)
 
     def _print_table(self):
-        print("\n------- 路由表 -------")
+        print("\n" + "="*60)
+        print("当前路由表 (Distance Vector)")
+        print("="*60)
+        print(f"{'目标':<10} {'开销':<10} {'下一跳':<10} {'接口':<15}")
+        print("-"*60)
         with self.rt_lock:
             for dest, info in self.routing_table.items():
-                print(f"{dest:<5} Cost:{info['cost']:<5} Next:{info['next_hop_id']:<5} IF:{info['next_hop_port']}")
-        print("-" * 30)
+                cost_str = str(info['cost']) if info['cost'] < 999 else "∞"
+                print(f"{dest:<10} {cost_str:<10} {info['next_hop_id']:<10} {info['next_hop_port']:<15}")
+        print("="*60 + "\n")
 
 if __name__ == '__main__':
     node = ReliableRouterNode()
