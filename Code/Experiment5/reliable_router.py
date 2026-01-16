@@ -66,7 +66,7 @@ class ReliableRouterNode:
         
         # 干扰控制
         self.corruption_start_time = None
-        self.CORRUPTION_DURATION = 2.0 # 干扰持续时间(秒) - 覆盖第一次发送重传
+        self.CORRUPTION_DURATION = 0.2 # 干扰持续时间(秒) - 覆盖第一次发送重传
 
     def start(self):
         print("="*60)
