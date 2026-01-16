@@ -61,12 +61,9 @@ class ReliableRouterNode:
         self.ack_event = threading.Event() # 用于等待ACK
         self.received_ack_seq = -1    # 收到的ACK序号
         
-        self.simulate_error = False   # 模拟校验错误开关
+        self.simulate_error = False   # 模拟校验错误开关 (Legacy boolean)
+        self.corruption_count = 0     # [NEW] 剩余干扰次数
         self.simulate_loss = False    # 模拟丢包开关
-        
-        # 干扰控制
-        self.corruption_start_time = None
-        self.CORRUPTION_DURATION = 0.2 # 干扰持续时间(秒) - 覆盖第一次发送重传
 
     def start(self):
         print("="*60)
@@ -402,24 +399,6 @@ class ReliableRouterNode:
         self.seq_num = seq
         
         t_type = TRANS_TYPE_SYN
-        chk = self._calculate_checksum(self.my_id, target_id, seq, t_type, msg)
-        
-        if self.simulate_error:
-            # 干扰逻辑: 第一次触发起 N 秒内持续干扰
-            if self.corruption_start_time is None:
-               self.corruption_start_time = time.time()
-            
-            elapsed = time.time() - self.corruption_start_time
-            if elapsed < self.CORRUPTION_DURATION:
-               print(f"[Simulate] 模拟校验码错误 (持续干扰中 {elapsed:.1f}s / {self.CORRUPTION_DURATION}s)")
-               chk += 123
-            else:
-               print("[Simulate] 干扰时间结束，恢复正常")
-               self.simulate_error = False
-               self.corruption_start_time = None
-        
-        tf_str = f"0{SEPARATOR}0{SEPARATOR}{seq}{SEPARATOR}{chk}{SEPARATOR}{t_type}{SEPARATOR}{msg}"
-        packet = f"{TYPE_DATA}{SEPARATOR}{self.my_id}{SEPARATOR}{target_id}{SEPARATOR}{tf_str}"
         
         print(f"\n=== 开始可靠发送到 {target_id} ===")
         print(f"[TX] 发送 SYN (Seq={seq}, 数据='{msg}')")
@@ -427,6 +406,22 @@ class ReliableRouterNode:
         # 发送SYN并等待SYN-ACK
         syn_ack_received = False
         for attempt in range(MAX_RETRIES):
+            # [RE-CALC] 每次尝试都需要重新计算校验码，以便模拟“恢复正常”
+            chk = self._calculate_checksum(self.my_id, target_id, seq, t_type, msg)
+            
+            # [干扰逻辑] 基于次数
+            if self.corruption_count > 0:
+                print(f"[Simulate] 模拟校验码错误 (剩余干扰次数: {self.corruption_count})")
+                chk += 123
+                self.corruption_count -= 1
+            elif self.simulate_error: # 兼容旧开关模式，仅一次
+                print(f"[Simulate] 模拟校验码错误 (本次)")
+                chk += 123
+                self.simulate_error = False
+
+            tf_str = f"0{SEPARATOR}0{SEPARATOR}{seq}{SEPARATOR}{chk}{SEPARATOR}{t_type}{SEPARATOR}{msg}"
+            packet = f"{TYPE_DATA}{SEPARATOR}{self.my_id}{SEPARATOR}{target_id}{SEPARATOR}{tf_str}"
+
             if not self._network_send(target_id, packet):
                 print("发送失败: 网络层无法发送")
                 break
@@ -505,14 +500,20 @@ class ReliableRouterNode:
                 if op == 'table' or op == 't':
                     self._print_table()
                 elif op == 'corrupt':
-                    if len(parts) > 1 and parts[1] == 'on':
-                        self.simulate_error = True
-                        self.corruption_start_time = None # 重置计时器
-                        print(f"✓ 模拟校验错误已开启 (将在前 {self.CORRUPTION_DURATION}s 内持续干扰)")
+                    if len(parts) > 1:
+                        val = parts[1]
+                        if val.isdigit():
+                            self.corruption_count = int(val)
+                            print(f"✓ 模拟校验错误已开启 (下 {self.corruption_count} 次发送将受干扰)")
+                        elif val == 'on':
+                            self.corruption_count = 5 # 默认干扰5次
+                            print(f"✓ 模拟校验错误已开启 (默认干扰5次)")
+                        else:
+                             self.simulate_error = False
+                             self.corruption_count = 0
+                             print("✓ 模拟校验错误已关闭")
                     else:
-                        self.simulate_error = False
-                        self.corruption_start_time = None
-                        print("✓ 模拟校验错误已关闭")
+                        print("用法: corrupt <on/off/次数>")
                 elif op == 'loss':
                     if len(parts) > 1 and parts[1] == 'on':
                         self.simulate_loss = True
