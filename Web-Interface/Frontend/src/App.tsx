@@ -66,17 +66,39 @@ function App() {
 
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily: 'Consolas, "Courier New", monospace',
+      fontFamily: '"Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace',
       fontSize: 14,
+      lineHeight: 1.2,
+      letterSpacing: 0,
       theme: {
         background: '#0d1117',
-        foreground: '#c9d1d9'
+        foreground: '#c9d1d9',
+        cursor: '#58a6ff',
+        selectionBackground: 'rgba(88, 166, 255, 0.3)',
+        black: '#0d1117',
+        red: '#ff7b72',
+        green: '#3fb950',
+        yellow: '#d29922',
+        blue: '#58a6ff',
+        magenta: '#bc8cff',
+        cyan: '#39c5cf',
+        white: '#b1bac4',
+        brightBlack: '#484f58',
+        brightRed: '#ffa198',
+        brightGreen: '#56d364',
+        brightYellow: '#e3b341',
+        brightBlue: '#79c0ff',
+        brightMagenta: '#d2a8ff',
+        brightCyan: '#56d4dd',
+        brightWhite: '#f0f6fc'
       }
     });
     
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     
+    // Add inner padding via CSS wrapper instead of term option? 
+    // Actually xterm doesn't have easy padding. We rely on container.
     term.open(termRef.current);
     try {
         fitAddon.fit();
@@ -281,8 +303,25 @@ function App() {
       </div>
 
       {/* Bottom: Terminal */}
-      <div style={{ height: terminalHeight, background: '#0d1117', padding: '0 0px', position: 'relative' }}>
-         <div ref={termRef} style={{ width: '100%', height: '100%' }} />
+      <div style={{ height: terminalHeight, background: '#0d1117', padding: '0 0px', position: 'relative', display: 'flex', flexDirection: 'column' }}>
+         <div style={{
+            padding: '4px 10px',
+            background: '#161b22',
+            borderBottom: '1px solid #30363d',
+            fontSize: '11px',
+            color: '#8b949e',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            height: '24px',
+            flexShrink: 0
+         }}>
+             <span>TERMINAL</span>
+             <span>bash</span>
+         </div>
+         <div style={{ flex: 1, padding: '10px', minHeight: 0 }}>
+             <div ref={termRef} style={{ width: '100%', height: '100%' }} />
+         </div>
       </div>
     </div>
   );

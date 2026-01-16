@@ -61,7 +61,7 @@ class TerminalSession:
         self.process = None
         self.thread = None
         self.running = False
-        self.current_buffer = ""
+        self.current_buffer = "" # Only for menu
         
         # Initial greeting
         self.show_menu()
@@ -86,14 +86,37 @@ class TerminalSession:
 
     def write(self, data):
         """Handle input from WebSocket"""
+        
+        # Local Echo Logic (Simulate Terminal)
+        # Send back exactly what we got for visual feedback, 
+        # but convert \r to \r\n for display
+        echo_data = data
+        if echo_data == '\r':
+            echo_data = '\r\n'
+        self.log_callback(echo_data)
+        
         # If no process is running, we are in menu mode
         if not self.process or self.process.poll() is not None:
-            cmd = data.strip()
-            if cmd in MENU_OPTIONS:
-                self.launch(MENU_OPTIONS[cmd])
+            # Accumulate buffer for menu selection
+            if data == '\r':
+                cmd = self.current_buffer.strip()
+                self.current_buffer = "" # Reset
+                
+                if cmd in MENU_OPTIONS:
+                    self.launch(MENU_OPTIONS[cmd])
+                else:
+                    if cmd:
+                        self.log_callback(f"Unknown option: {cmd}\r\n> ")
+                    else:
+                        self.log_callback("> ")
+            elif data == '\x7f': # Backspace
+                if len(self.current_buffer) > 0:
+                    self.current_buffer = self.current_buffer[:-1]
+                    # Visual backspace: Move back, Space, Move back
+                    self.log_callback("\b \b") 
             else:
-                if cmd:
-                    self.log_callback(f"\r\nUnknown option: {cmd}\r\n> ")
+                self.current_buffer += data
+                
             return
 
         # If process is running, write to stdin
@@ -101,10 +124,11 @@ class TerminalSession:
             try:
                 # Add newline because most inputs expect it
                 # But typical xterm sends \r, need to ensure python gets \n
-                if data == '\r': 
-                    data = '\n'
+                input_data = data
+                if input_data == '\r': 
+                    input_data = '\n'
                 
-                self.process.stdin.write(data.encode('utf-8'))
+                self.process.stdin.write(input_data.encode('utf-8'))
                 self.process.stdin.flush()
             except IOError:
                 pass

@@ -124,7 +124,8 @@ python main.py
 2.  **启动前端** (开启热更新):
     ```bash
     cd Web-Interface/Frontend
-    npm install && npm run dev
+    npm install
+    npm run dev
     ```
 > **开发地址**: 打开终端显示的 Frontend 地址 (通常为 `http://localhost:5173`)
 
