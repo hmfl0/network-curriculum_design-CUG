@@ -57,17 +57,15 @@ class NetworkNode:
 
         self.routing_table = {}
         self.rt_lock = threading.Lock()
-
-    def log(self, *args, **kwargs):
-        print(*args, **kwargs)
-
-        # Ping/Tracert 状态管理
-        # events: {seq: threading.Event}
-        # results: {seq: params}
+        
+        # Ping/Tracert State Management
         self.icmp_events = {}
         self.icmp_results = {}
         self.icmp_lock = threading.Lock()
         self.seq_counter = 0
+
+    def log(self, *args, **kwargs):
+        print(*args, **kwargs)
 
     def start(self):
         print("="*60)

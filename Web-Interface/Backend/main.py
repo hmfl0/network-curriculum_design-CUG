@@ -47,21 +47,28 @@ async def startup_event():
         log_callback=broadcast_log,
         topo_callback=broadcast_topo
     )
-    
-    # Start the node in a separate thread
-    t = threading.Thread(target=node_instance.start, daemon=True)
-    t.start()
-    
-    # We might need to give it some time to init serial? 
-    # The original code asks for ID input at start().
-    # Wait! NetworkNode.start() usually has input() inside for ID? 
-    # Let's check network_app.py implementation of start() and __init__
-    # If it asks for input(), we need to handle that.
+    # Don't start the thread immediately here. 
+    # Because there is no websocket to receive the initial "Enter ID" prompt.
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_websockets.append(websocket)
+    
+    # Check if the node thread is running; if not, start it now that we have a viewer.
+    if node_instance and not node_instance.running and not hasattr(node_instance, '_thread_started'):
+        node_instance._thread_started = True
+        t = threading.Thread(target=node_instance.start, daemon=True)
+        t.start()
+    # If the node is already waiting for input (e.g. ID or Ports), 
+    # re-broadcast the last prompts or status to the new client?
+    # Our bridge log logic prints to active_websockets. 
+    # If we missed the initial log, the user sees nothing.
+    # We should probably ask the node to re-print its status or help.
+    elif node_instance and node_instance.running:
+         # Send a welcome back or status update
+         pass
+
     try:
         while True:
             data = await websocket.receive_text()

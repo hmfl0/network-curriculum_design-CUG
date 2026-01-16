@@ -20,6 +20,7 @@ import time
 import json
 import sys
 import zlib
+import random
 
 # === 协议常量 ===
 TYPE_HELLO = 'HELLO'
@@ -30,6 +31,7 @@ SEPARATOR  = '|'
 # 运输层常量
 TRANS_TYPE_DATA = 'DAT'
 TRANS_TYPE_ACK  = 'ACK'
+TRANS_TYPE_SYN  = 'SYN' # 类似TCP SYN，用于建立新会话并同步序列号
 
 # 配置
 BAUDRATE = 9600
@@ -275,7 +277,14 @@ class ReliableRouterNode:
                     return # 丢弃，不发ACK (等待发送方超时)
                 
                 # 2. 处理 Type
-                if t_type == TRANS_TYPE_DATA:
+                if t_type == TRANS_TYPE_SYN or t_type == TRANS_TYPE_DATA:
+                    # 如果是 SYN，强制同步序列号 (类似 TCP 三次握手的第一步简化版)
+                    # 我们允许 SYN 携带数据 (TCP Fast Open 风格)
+                    if t_type == TRANS_TYPE_SYN:
+                        print(f"[RX SYN] 新会话请求 来自{src_id} InitSeq={seq}")
+                        self.expected_seqs[src_id] = seq # 重置期望为当前seq
+                        # 接下来的逻辑会处理这个 seq，然后 expected + 1
+                    
                     # 收到数据，发送ACK
                     print(f"[RX] 收到数据 来自{src_id} Seq={seq}: {body}")
                     self._transport_send_ack(src_id, seq)
@@ -288,8 +297,8 @@ class ReliableRouterNode:
                     elif seq < expected:
                         print(f"    [重复帧] Seq={seq}, 期望={expected}. 丢弃.")
                     else:
-                        print(f"    [失序帧] Seq={seq}, 期望={expected}. 暂时丢弃(简单停等).")
-                        
+                        print(f"    [失序帧] Seq={seq}, 期望={expected}. 暂时丢弃.")
+
                 elif t_type == TRANS_TYPE_ACK:
                     # 收到ACK
                     print(f"[RX] 收到ACK 来自{src_id} AckSeq={seq}")
@@ -346,24 +355,29 @@ class ReliableRouterNode:
 
     def _initiate_reliable_send(self, target_id, msg):
         """停等协议发送逻辑 (Blocking)"""
-        seq = self.seq_num # 当前要发送的序号
+        # [NEW] 随机生成 Seq (类似 TCP ISN)
+        seq = random.randint(0, 65535)
+        
         # 准备 Transport Frame
         # Fmt: SrcP|DstP|Seq|Chk|Type|Body
         
+        # [NEW] 使用 SYN 类型来标志这是一个新会话 (Send命令是一次性会话)
+        t_type = TRANS_TYPE_SYN
+        
         # 1. 计算校验码
-        chk = self._calculate_checksum(self.my_id, target_id, seq, TRANS_TYPE_DATA, msg)
+        chk = self._calculate_checksum(self.my_id, target_id, seq, t_type, msg)
         
         if self.simulate_error:
             print("[Simulate] 模拟校验码错误 (发送损坏包)")
             chk += 123 # 破坏校验码
             self.simulate_error = False # Reset
             
-        tf_str = f"0{SEPARATOR}0{SEPARATOR}{seq}{SEPARATOR}{chk}{SEPARATOR}{TRANS_TYPE_DATA}{SEPARATOR}{msg}"
+        tf_str = f"0{SEPARATOR}0{SEPARATOR}{seq}{SEPARATOR}{chk}{SEPARATOR}{t_type}{SEPARATOR}{msg}"
         
         # 2. 封装网络层
         packet = f"{TYPE_DATA}{SEPARATOR}{self.my_id}{SEPARATOR}{target_id}{SEPARATOR}{tf_str}"
         
-        print(f"--- 开始发送可靠消息 Seq={seq} to {target_id} ---")
+        print(f"--- 开始可靠发送 (SYN Mode) Seq={seq} to {target_id} ---")
         
         success = False
         for attempt in range(MAX_RETRIES):
@@ -376,8 +390,7 @@ class ReliableRouterNode:
             
             # 等待
             self.ack_event.clear()
-            # 必须重置收到的 ack，防止旧的残留?
-            # self.received_ack_seq 应该由接收线程更新
+            self.received_ack_seq = -1
             
             if self.ack_event.wait(TIMEOUT_RETRANSMIT):
                 if self.received_ack_seq == seq:
@@ -385,12 +398,13 @@ class ReliableRouterNode:
                     success = True
                     break
                 else:
-                    print(f"[TX Info] 收到过时/错误ACK: {self.received_ack_seq}")
+                    print(f"[TX Info] 收到非当前ACK: {self.received_ack_seq}")
             else:
                 print(f"[TX Timeout] 超时未收到ACK")
                 
         if success:
-            self.seq_num += 1 # 准备下一个
+            # self.seq_num += 1 # 不需要了，每次随机
+            pass
         else:
             print("--- 发送最终失败 (达到最大重传次数) ---")
 
