@@ -96,35 +96,40 @@ python Code/Experiment6/network_app.py
 
 ## 2. Web端可视化的启动方法
 
-Web 界面提供了更直观的拓扑图和全网流量监控。
+Web 界面提供了更直观的拓扑图和全网流量监控。系统已集成静态资源，无需安装 Node.js 即可运行。
 
 ### 依赖环境
-*   **前端**: `Node.js`  , `npm` 或 `yarn`
-*   **后端**: `Python 3.11+`
+*   **基础**: `Python 3.11+`
+*   **开发**: `Node.js` (仅修改前端代码时需要)
 
 ### 启动步骤
 
-#### 第一步：启动后端桥接服务 (Backend)
-后端负责将串口数据转换为 WebSocket 消息推送到前端。
+#### 方法一：快速启动 (推荐)
+直接运行后端即可自动托管前端页面。
 
 ```bash
 # cd Web-Interface/Backend
 pip install -r requirements.txt
 python main.py
 ```
-> **注意**: 后端启动后会暂停运行，等待前端页面连接后才会初始化串口节点。
+> **启动成功后**: 在浏览器打开 [http://localhost:8000](http://localhost:8000)
 
-#### 第二步：启动前端可视化界面 (Frontend)
-前端基于 `React` + `Vite` 构建。
+#### 方法二：开发模式 (前后端分离)
+如果你需要修改 React 前端代码并实时预览：
 
-```bash
-# cd Web-Interface/Frontend
-npm install
-npm run dev
-```
+1.  **启动后端** (同上):
+    ```bash
+    python Web-Interface/Backend/main.py
+    ```
+2.  **启动前端** (开启热更新):
+    ```bash
+    cd Web-Interface/Frontend
+    npm install
+    npm run dev
+    ```
+> **开发地址**: 打开终端显示的 Frontend 地址 (通常为 `http://localhost:5173`)
 
-#### 第三步：使用说明
-1.  在浏览器打开终端显示的地址（通常为 `http://localhost:5173`）。
-2.  **Web 终端配置**: 页面连接成功后，网页上的“终端”窗口会提示输入 ID 和选择串口，操作方式与 CLI 实验一致。
-3.  **发送指令**: 使用右侧的“指令控制台”发送 `ping`, `tracert` 或 `send` 命令。
-4.  **观察效果**: 中间的拓扑图将实时显示节点连接状态和数据包传输动画。
+#### 使用说明
+1.  **终端选择**: 网页打开后，终端会显示实验菜单。输入对应数字 (如 `4` 启动实验四) 即可加载实验脚本。
+2.  **Web 终端交互**: 页面下半部分的终端完全模拟本地 CMD，你可以在此输入 ID、选择串口、查看 Print 输出。
+3.  **可视化**: 页面上半部分会自动解析路由表更新 (如 `table` 命令)，实时绘制网络拓扑动画。

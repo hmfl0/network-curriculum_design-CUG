@@ -1,379 +1,330 @@
-
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
+import { Terminal } from 'xterm';
+import { FitAddon } from 'xterm-addon-fit';
+import 'xterm/css/xterm.css';
 
-// Simple interface for graph data
+// Graph Interfaces
 interface GraphData {
-  nodes: { id: string, name: string, val: number }[];
-  links: { source: string, target: string }[];
+  nodes: { id: string, name: string, val: number, color?: string }[];
+  links: { source: string, target: string, color?: string }[];
 }
 
 function App() {
-  const [logs, setLogs] = useState<string[]>([]);
-  const [cmd, setCmd] = useState("");
+  // --- Layout State ---
+  const [terminalHeight, setTerminalHeight] = useState(300); // Initial height in px
+  const [graphDimensions, setGraphDimensions] = useState({ width: window.innerWidth, height: window.innerHeight - 300 });
+  
+  // --- Data State ---
   const [graphData, setGraphData] = useState<GraphData>({ nodes: [], links: [] });
+  
+  // --- Refs ---
   const ws = useRef<WebSocket | null>(null);
-  const logEndRef = useRef<HTMLDivElement | null>(null);
+  const termRef = useRef<HTMLDivElement | null>(null);
+  const xtermRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const isResizing = useRef(false);
 
+  // --- WebSocket Setup ---
   useEffect(() => {
-    // Connect to Backend
     ws.current = new WebSocket("ws://localhost:8000/ws");
     
     ws.current.onopen = () => {
-      addLog("System: Connected to Network Node Backend.");
+      xtermRef.current?.writeln("\x1b[1;32m[System] Connected to Network Backend.\x1b[0m");
     };
 
     ws.current.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       if (msg.type === 'log') {
-        addLog(msg.data);
+        const text = msg.data.replace(/\n/g, '\r\n');
+        xtermRef.current?.write(text);
       } else if (msg.type === 'topo') {
         updateGraph(msg.data);
       }
     };
+
+    ws.current.onclose = () => {
+      xtermRef.current?.writeln("\r\n\x1b[1;31m[System] Disconnected from Backend.\x1b[0m");
+    }
 
     return () => {
       ws.current?.close();
     };
   }, []);
 
-  // Auto-scroll to bottom of logs
+  // --- Terminal Setup ---
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
+    if (!termRef.current) return;
 
-  const addLog = (text: string) => {
-    setLogs(prev => [...prev.slice(-100), text]); // Keep last 100 lines
-  };
+    // Dispose old if exists (strict mode double mount)
+    if (xtermRef.current) {
+        // xtermRef.current.dispose();
+        // fitAddonRef.current = null;
+        // reuse checks?
+        return;
+    }
 
-  const updateGraph = (topo: any) => {
-    // Transform backend topology data to graph format
-    // topo.table = { "B": {cost:1, ...}, ... }
-    const nodes = [{ id: topo.id, name: topo.id + " (Me)", val: 10 }];
-    const links: any[] = [];
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: '"Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace',
+      fontSize: 14,
+      lineHeight: 1.2,
+      letterSpacing: 0,
+      theme: {
+        background: '#0d1117',
+        foreground: '#c9d1d9',
+        cursor: '#58a6ff',
+        selectionBackground: 'rgba(88, 166, 255, 0.3)',
+        black: '#0d1117',
+        red: '#ff7b72',
+        green: '#3fb950',
+        yellow: '#d29922',
+        blue: '#58a6ff',
+        magenta: '#bc8cff',
+        cyan: '#39c5cf',
+        white: '#b1bac4',
+        brightBlack: '#484f58',
+        brightRed: '#ffa198',
+        brightGreen: '#56d364',
+        brightYellow: '#e3b341',
+        brightBlue: '#79c0ff',
+        brightMagenta: '#d2a8ff',
+        brightCyan: '#56d4dd',
+        brightWhite: '#f0f6fc'
+      }
+    });
     
-    // Add neighbors from routing table as nodes and links
-    Object.keys(topo.table).forEach(dest => {
-       if (dest !== topo.id) {
-           nodes.push({ id: dest, name: dest, val: 5 });
-           // If direct neighbor (cost 1 or defined in neighbors), add link
-           // Simplified visualization
-           links.push({ source: topo.id, target: dest });
-       }
+    const fitAddon = new FitAddon();
+    term.loadAddon(fitAddon);
+    
+    // Add inner padding via CSS wrapper instead of term option? 
+    // Actually xterm doesn't have easy padding. We rely on container.
+    term.open(termRef.current);
+    try {
+        fitAddon.fit();
+    } catch(e) {}
+    
+    xtermRef.current = term;
+    fitAddonRef.current = fitAddon;
+
+    term.onData(data => {
+      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+        ws.current.send(JSON.stringify({ type: 'command', data: data }));
+      }
     });
 
-    setGraphData({ nodes, links });
+    const resizeObserver = new ResizeObserver(() => {
+        try { fitAddon.fit(); } catch(e) {}
+    });
+    
+    if (termRef.current) {
+        resizeObserver.observe(termRef.current);
+    }
+
+    // Initial branding
+    term.writeln("\x1b[1;36m=== Network Experiment Console ===\x1b[0m");
+    term.writeln("Connecting...");
+
+    return () => {
+      // Cleanup handled by react strict mode caveat often overrides this
+      // term.dispose();
+      // resizeObserver.disconnect();
+    };
+  }, []);
+
+  // --- Graph Update Logic ---
+  const updateGraph = (topo: any) => {
+    // topo.table = { "B": {cost:1, ...}, ... }
+    
+    setGraphData(prevData => {
+        const newNodes = [...prevData.nodes];
+        const newLinks = [...prevData.links];
+        
+        // Helper to find or add node
+        const getOrAddNode = (id: string, isMe = false) => {
+            let n = newNodes.find(x => x.id === id);
+            if (!n) {
+                n = { 
+                    id, 
+                    name: id + (isMe ? " (Me)" : ""), 
+                    val: isMe ? 20 : 10,
+                    color: isMe ? '#4ade80' : '#60a5fa' 
+                };
+                newNodes.push(n);
+            } else if (isMe) {
+                n.name = id + " (Me)";
+                n.val = 20;
+                n.color = '#4ade80';
+            }
+            return n;
+        };
+
+        const me = getOrAddNode(topo.id, true);
+
+        // Process Table
+        Object.keys(topo.table).forEach(dest => {
+            const info = topo.table[dest];
+            const cost = info.cost;
+            const next_hop = info.next_hop;
+            
+            getOrAddNode(dest); // Ensure dest exists
+
+            // Logic: Draw link if next_hop matches dest (Direct Link)
+            // Or if specific routing logic dictates.
+            // Simplified: If cost is low (<999) and next_hop is known neighbor logic
+            // We just add a link if we don't have one? 
+            // Better: Add link from ME to NEXT_HOP (because that is the physical link I use)
+            // But if Next_Hop is Myself (local), skip.
+            
+            if (next_hop && next_hop !== topo.id && next_hop !== 'LOCAL') {
+                 // Ensure next hop node exists
+                 getOrAddNode(next_hop);
+                 
+                 // Add link Me -> NextHop
+                 const linkExists = newLinks.some(l => 
+                    (l.source === topo.id && l.target === next_hop) || 
+                    (l.source === next_hop && l.target === topo.id)
+                 );
+                 
+                 if (!linkExists) {
+                     newLinks.push({ source: topo.id, target: next_hop });
+                 }
+                 
+                 // How do we know NextHop -> Dest? We don't.
+            } else if (cost === 1 || next_hop === dest) {
+                // If it looks like a direct neighbor
+                 const linkExists = newLinks.some(l => 
+                    (l.source === topo.id && l.target === dest) || 
+                    (l.source === dest && l.target === topo.id)
+                 );
+                 if (!linkExists) {
+                     newLinks.push({ source: topo.id, target: dest });
+                 }
+            }
+        });
+
+        return { nodes: newNodes, links: newLinks };
+    });
   };
 
-  const sendCommand = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ws.current || !cmd) return;
+  // --- Resizing Logic ---
+  const startResizing = useCallback((mouseDownEvent: React.MouseEvent) => {
+    isResizing.current = true;
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  const stopResizing = useCallback(() => {
+    isResizing.current = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }, []);
+
+  const resize = useCallback((mouseMoveEvent: MouseEvent) => {
+    if (isResizing.current) {
+      const newHeight = window.innerHeight - mouseMoveEvent.clientY;
+      if (newHeight > 50 && newHeight < window.innerHeight - 50) {
+        setTerminalHeight(newHeight);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("mousemove", resize);
+    window.addEventListener("mouseup", stopResizing);
     
-    ws.current.send(JSON.stringify({ type: 'command', data: cmd }));
-    setCmd("");
-  };
+    return () => {
+      window.removeEventListener("mousemove", resize);
+      window.removeEventListener("mouseup", stopResizing);
+    };
+  }, [resize, stopResizing]);
+
+  // Adjust graph on layout change
+  useEffect(() => {
+      setGraphDimensions({
+          width: window.innerWidth,
+          height: window.innerHeight - terminalHeight
+      });
+      // Also fit terminal
+      if(fitAddonRef.current) {
+          try { fitAddonRef.current.fit(); } catch(e) {}
+      }
+  }, [terminalHeight]); // Also trigger on window resize via another effect if needed, but react-force-graph usually handles window resize if passed dim?
+  
+  useEffect(() => {
+     const handleResize = () => {
+        setGraphDimensions({
+            width: window.innerWidth,
+            height: window.innerHeight - terminalHeight
+        });
+        if(fitAddonRef.current) try { fitAddonRef.current.fit(); } catch(e) {}
+     };
+     window.addEventListener('resize', handleResize);
+     return () => window.removeEventListener('resize', handleResize);
+  }, [terminalHeight]);
+
 
   return (
-    <div style={styles.container}>
-      <style>{`
-        /* Custom Scrollbar for Terminal */
-        .terminal-scroll::-webkit-scrollbar {
-          width: 8px;
-        }
-        .terminal-scroll::-webkit-scrollbar-track {
-          background: #1a1a1a; 
-        }
-        .terminal-scroll::-webkit-scrollbar-thumb {
-          background: #444; 
-          border-radius: 4px;
-        }
-        .terminal-scroll::-webkit-scrollbar-thumb:hover {
-          background: #666; 
-        }
-        body { margin: 0; padding: 0; background: #0d1117; }
-        
-        @keyframes pulse {
-          0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.4); }
-          70% { box-shadow: 0 0 0 10px rgba(74, 222, 128, 0); }
-          100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
-        }
-      `}</style>
-
-      {/* Header */}
-      <header style={styles.header}>
-        <div style={styles.brand}>
-          <div style={styles.logoIcon}>📡</div>
-          <div>
-            <h1 style={styles.title}>Network Admin Console</h1>
-            <span style={styles.subtitle}>Experiment 6 • Distributed Routing Control</span>
-          </div>
-        </div>
-        <div style={styles.statusBadge}>
-          <span style={styles.statusDot}></span>
-          <span>Online</span>
-        </div>
-      </header>
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#0d1117', color: '#fff' }}>
       
-      {/* Main Content */}
-      <main style={styles.main}>
-        {/* Graph Area */}
-        <section style={styles.graphSection}>
-          <div style={styles.panelHeader}>
-            <span style={styles.panelTitle}>Network Topology</span>
-            <div style={styles.panelControls}>
-              <span style={{...styles.controlDot, background:'#ff5f56'}}></span>
-              <span style={{...styles.controlDot, background:'#ffbd2e'}}></span>
-              <span style={{...styles.controlDot, background:'#27c93f'}}></span>
-            </div>
-          </div>
-          <div style={styles.graphContainer}>
-            <ForceGraph2D
-                graphData={graphData}
-                nodeLabel="name"
-                nodeAutoColorBy="id"
-                linkDirectionalArrowLength={3.5}
-                linkDirectionalArrowRelPos={1}
-                backgroundColor="#0d1117"
-                linkColor={() => '#30363d'}
-                nodeRelSize={6}
-            />
-            <div style={styles.overlayInfo}>
-              Nodes: {graphData.nodes.length} | Links: {graphData.links.length}
-            </div>
-          </div>
-        </section>
+      {/* Top: Graph Visualization */}
+      <div style={{ height: graphDimensions.height, overflow: 'hidden', position: 'relative' }}>
+        <div style={{ position: 'absolute', top: 10, left: 10, zIndex: 10, background: 'rgba(0,0,0,0.5)', padding: '5px 10px', borderRadius: 4, fontFamily: 'Segoe UI' }}>
+            <span style={{color: '#4ade80'}}>●</span> Graph Visualization
+        </div>
+        <ForceGraph2D
+          width={graphDimensions.width}
+          height={graphDimensions.height}
+          graphData={graphData}
+          nodeLabel="name"
+          nodeColor={node => (node as any).color || '#60a5fa'}
+          nodeRelSize={6}
+          linkColor={() => '#30363d'}
+          backgroundColor="#0d1117"
+        />
+      </div>
 
-        {/* Console Area */}
-        <section style={styles.consoleSection}>
-          <div style={styles.panelHeader}>
-            <span style={styles.panelTitle}>Terminal Output</span>
-            <span style={styles.sshBadge}>SSH: Localhost:8000</span>
-          </div>
-          
-          <div className="terminal-scroll" style={styles.terminalBody}>
-              {logs.length === 0 && (
-                <div style={styles.emptyState}>
-                  Waiting for connection... <br/>
-                  Enter <code>help</code> for commands.
-                </div>
-              )}
-              {logs.map((L, i) => (
-                  <div key={i} style={styles.logLine}>
-                    <span style={styles.promptChar}>➜</span> {L}
-                  </div>
-              ))}
-              <div ref={logEndRef} />
-          </div>
+      {/* Resizer Handle */}
+      <div
+        onMouseDown={startResizing}
+        style={{
+          height: '6px',
+          cursor: 'row-resize',
+          background: '#010409',
+          borderTop: '1px solid #30363d',
+          borderBottom: '1px solid #30363d',
+          zIndex: 20,
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center'
+        }}
+      >
+        <div style={{width: 30, height: 2, background: '#30363d', borderRadius: 1}}></div>
+      </div>
 
-          <form onSubmit={sendCommand} style={styles.commandBar}>
-              <span style={styles.commandPrompt}>admin@node:~$</span>
-              <input 
-                  value={cmd}
-                  onChange={e => setCmd(e.target.value)}
-                  style={styles.input}
-                  placeholder="Enter command (e.g., ping B, tracert C)..."
-                  autoFocus
-              />
-              <button type="submit" style={styles.sendBtn}>SEND</button>
-          </form>
-        </section>
-      </main>
+      {/* Bottom: Terminal */}
+      <div style={{ height: terminalHeight, background: '#0d1117', padding: '0 0px', position: 'relative', display: 'flex', flexDirection: 'column' }}>
+         <div style={{
+            padding: '4px 10px',
+            background: '#161b22',
+            borderBottom: '1px solid #30363d',
+            fontSize: '11px',
+            color: '#8b949e',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            height: '24px',
+            flexShrink: 0
+         }}>
+             <span>TERMINAL</span>
+             <span>bash</span>
+         </div>
+         <div style={{ flex: 1, padding: '10px', minHeight: 0 }}>
+             <div ref={termRef} style={{ width: '100%', height: '100%' }} />
+         </div>
+      </div>
     </div>
-  )
+  );
 }
 
-// CSS-in-JS Styles
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    display: 'flex', 
-    flexDirection: 'column', 
-    height: '100vh', 
-    fontFamily: '"Segoe UI", "Roboto", sans-serif',
-    background: '#010409',
-    color: '#c9d1d9',
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '15px 25px',
-    background: '#161b22',
-    borderBottom: '1px solid #30363d',
-    boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-    zIndex: 10,
-  },
-  brand: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-  },
-  logoIcon: {
-    fontSize: '24px',
-  },
-  title: {
-    margin: 0,
-    fontSize: '18px',
-    fontWeight: 600,
-    color: '#f0f6fc',
-  },
-  subtitle: {
-    display: 'block',
-    fontSize: '12px',
-    color: '#8b949e',
-    marginTop: '2px',
-  },
-  statusBadge: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '6px 12px',
-    background: 'rgba(56, 139, 253, 0.1)',
-    border: '1px solid rgba(56, 139, 253, 0.4)',
-    borderRadius: '20px',
-    fontSize: '12px',
-    color: '#58a6ff',
-    fontWeight: 500,
-  },
-  statusDot: {
-    width: '8px',
-    height: '8px',
-    background: '#3fb950',
-    borderRadius: '50%',
-    boxShadow: '0 0 8px #3fb950',
-    animation: 'pulse 2s infinite',
-  },
-  main: {
-    flex: 1,
-    display: 'flex',
-    overflow: 'hidden',
-    padding: '15px',
-    gap: '15px',
-  },
-  graphSection: {
-    flex: 3,
-    display: 'flex',
-    flexDirection: 'column',
-    background: '#0d1117',
-    border: '1px solid #30363d',
-    borderRadius: '8px',
-    overflow: 'hidden',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
-  },
-  panelHeader: {
-    padding: '10px 15px',
-    background: '#161b22',
-    borderBottom: '1px solid #30363d',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    fontSize: '13px',
-    fontWeight: 600,
-    textTransform: 'uppercase',
-    letterSpacing: '0.5px',
-    color: '#8b949e',
-  },
-  panelControls: {
-    display: 'flex',
-    gap: '6px',
-  },
-  controlDot: {
-    width: '10px',
-    height: '10px',
-    borderRadius: '50%',
-  },
-  graphContainer: {
-    flex: 1,
-    position: 'relative',
-  },
-  overlayInfo: {
-    position: 'absolute',
-    bottom: '15px',
-    left: '15px',
-    padding: '5px 10px',
-    background: 'rgba(22, 27, 34, 0.8)',
-    borderRadius: '4px',
-    fontSize: '12px',
-    color: '#8b949e',
-    border: '1px solid #30363d',
-    pointerEvents: 'none',
-  },
-  consoleSection: {
-    flex: 2,
-    display: 'flex',
-    flexDirection: 'column',
-    background: '#0d1117',
-    border: '1px solid #30363d',
-    borderRadius: '8px',
-    overflow: 'hidden',
-    maxWidth: '500px',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
-  },
-  sshBadge: {
-    fontSize: '10px',
-    background: '#238636',
-    color: 'white',
-    padding: '2px 6px',
-    borderRadius: '4px',
-  },
-  terminalBody: {
-    flex: 1,
-    overflowY: 'auto',
-    padding: '15px',
-    fontFamily: '"JetBrains Mono", "Fira Code", Consolas, monospace',
-    fontSize: '13px',
-    lineHeight: '1.6',
-    background: 'rgba(0,0,0,0.2)',
-  },
-  emptyState: {
-    color: '#484f58',
-    textAlign: 'center',
-    marginTop: '50px',
-    fontStyle: 'italic',
-  },
-  logLine: {
-    wordBreak: 'break-all',
-    marginBottom: '4px',
-    color: '#c9d1d9',
-  },
-  promptChar: {
-    color: '#2f81f7',
-    marginRight: '8px',
-    fontWeight: 'bold',
-  },
-  commandBar: {
-    display: 'flex',
-    alignItems: 'center',
-    background: '#161b22',
-    borderTop: '1px solid #30363d',
-    padding: '10px',
-  },
-  commandPrompt: {
-    color: '#3fb950',
-    fontFamily: 'Consolas, monospace',
-    fontSize: '13px',
-    marginRight: '10px',
-    fontWeight: 'bold',
-  },
-  input: {
-    flex: 1,
-    background: 'transparent',
-    border: 'none',
-    color: '#fff',
-    outline: 'none',
-    fontFamily: 'Consolas, monospace',
-    fontSize: '13px',
-  },
-  sendBtn: {
-    background: '#238636',
-    border: 'none',
-    color: '#fff',
-    padding: '6px 12px',
-    borderRadius: '4px',
-    fontSize: '12px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    transition: 'background 0.2s',
-  }
-};
-
-export default App
+export default App;

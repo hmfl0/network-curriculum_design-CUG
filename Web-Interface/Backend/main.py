@@ -1,11 +1,14 @@
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 import uvicorn
 import asyncio
 import json
 import threading
-from bridge import WebNetworkNode
+import os
+from terminal_session import TerminalSession
 
 app = FastAPI()
 
@@ -17,12 +20,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Set paths
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DIST_DIR = os.path.join(BASE_DIR, '../Frontend/dist')
+
 # Global Node Instance
-node_instance = None
+terminal_instance = None
 active_websockets = []
 
 def broadcast_log(msg: str):
-    print(f"[NODE] {msg}")
+    # print(f"[TERM] {msg}") # Optional server-side logging
     for websocket in active_websockets:
         asyncio.run_coroutine_threadsafe(
             websocket.send_json({"type": "log", "data": msg}), 
@@ -38,37 +45,29 @@ def broadcast_topo(data: dict):
 
 @app.on_event("startup")
 async def startup_event():
-    global node_instance, loop
+    global terminal_instance, loop
     loop = asyncio.get_event_loop()
     
-    # Initialize Node
-    # We pass the broadcast functions as callbacks
-    node_instance = WebNetworkNode(
+    # Initialize Terminal Session
+    terminal_instance = TerminalSession(
         log_callback=broadcast_log,
         topo_callback=broadcast_topo
     )
-    # Don't start the thread immediately here. 
-    # Because there is no websocket to receive the initial "Enter ID" prompt.
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_websockets.append(websocket)
     
-    # Check if the node thread is running; if not, start it now that we have a viewer.
-    if node_instance and not node_instance.running and not hasattr(node_instance, '_thread_started'):
-        node_instance._thread_started = True
-        t = threading.Thread(target=node_instance.start, daemon=True)
-        t.start()
-    # If the node is already waiting for input (e.g. ID or Ports), 
-    # re-broadcast the last prompts or status to the new client?
-    # Our bridge log logic prints to active_websockets. 
-    # If we missed the initial log, the user sees nothing.
-    # We should probably ask the node to re-print its status or help.
-    elif node_instance and node_instance.running:
-         # Send a welcome back or status update
-         pass
-
+    # Send initial menu if needed, or recent logs?
+    # TerminalSession handles its own internal buffer/state if we wanted to show history,
+    # but for now, just joining a session might show nothing until next update or we trigger a menu redraw.
+    # We can force a menu redraw for the new user if we want, but that might disturb existing output.
+    # Let's just tap in.
+    
+    # If the user just joined, maybe we should show the menu if idle?
+    # terminal_instance.show_menu() # Might duplicate if multiple users
+    
     try:
         while True:
             data = await websocket.receive_text()
@@ -76,11 +75,18 @@ async def websocket_endpoint(websocket: WebSocket):
             
             if message['type'] == 'command':
                 cmd = message['data']
-                if node_instance:
-                    node_instance.execute_command(cmd)
+                if terminal_instance:
+                    terminal_instance.write(cmd)
                     
     except WebSocketDisconnect:
         active_websockets.remove(websocket)
+
+# Serve React App
+# Verify dist directory exists to avoid errors if not built
+if os.path.exists(DIST_DIR):
+    app.mount("/", StaticFiles(directory=DIST_DIR, html=True), name="static")
+else:
+    print(f"Warning: React Build directory not found at {DIST_DIR}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

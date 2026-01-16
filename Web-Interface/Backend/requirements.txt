@@ -4,3 +4,4 @@ uvicorn
 pyserial
 websockets
 python-multipart
+aiofiles
