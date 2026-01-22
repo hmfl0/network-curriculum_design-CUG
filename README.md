@@ -1,195 +1,125 @@
 # 计算机网络课程设计 - 综合网络系统
 
-## 0. 项目概述
-
 本项目为计算机网络课程设计的完整代码实现。项目采用分层架构设计，从物理层的串口通信出发，循序渐进地构建了包含数据链路层转发、网络层动态路由（DV算法）、运输层可靠传输（停等协议）以及应用层网络管理（Ping/Traceroute）的完整协议栈。
 
-此外，项目还包含一个基于 **React**  的现代化 Web 可视化界面，能够实时监控网络拓扑结构、动态展示数据包流向，并提供图形化的交互操作控制台。
+本项目代码经过重构（位于 `Code_Refactored` 目录），提供了更加友好的交互界面（如自动扫描串口、数字菜单选择、统一日志输出等），极大降低了上手难度。
 
 ---
 
-## 1. 传统的快速调试方法 (CLI)
+## 1. 项目基本介绍
 
-本节汇总了六个基础实验的命令行启动方法。这是调试底层协议逻辑、验证算法正确性的推荐方式。
+本项目旨在通过 Python 代码模拟真实的网络协议栈行为。我们不使用操作系统的 TCP/IP 栈，而是通过**串口（Serial Port）**作为物理层介质，手动实现上层协议。
 
-> **前置条件**: 请确保已安装 Python 3.8+ 及必要依赖 `pip install pyserial`
->
-> **建议**:
->
-> ```shell
-> conda create -n cnetwork python=3.11
-> conda activate cnetwork
-> pip install pyserial
-> ```
-
-### Experiment 1 : 单机串口测试
-**功能说明**：
-验证 USB-TTL 串口模块的基础收发功能。通过“自环”测试（Tx接Rx），确保本地硬件与驱动环境正常。
-
-**快速启动**：
-```bash
-python Code/Experiment1/main.py
-```
-
-### Experiment 2 : 双机点对点通信
-**功能说明**：
-模拟基础的 C/S (客户端/服务器) 架构。客户端可向服务器发送时间查询、计算表达式等指令。
-*   支持命令: `TIME`, `ECHO <msg>`, `CALC <expr>`
-
-**快速启动**：
-*   **服务器端**:
-    ```bash
-    python Code/Experiment2/server.py
-    ```
-*   **客户端**:
-    ```bash
-    python Code/Experiment2/client.py
-    ```
-
-### Experiment 3 : 简单拓扑转发
-**功能说明**：
-构建树状/星型拓扑。**Root节点**作为交换中心，维护静态转发表；**Leaf节点**之间通过 Root 进行数据帧的中转通信。
-
-**快速启动**：
-*   **根节点 (Root)**:
-    ```bash
-    python Code/Experiment3/root.py
-    # 启动后需按提示绑定端口与ID
-    ```
-*   **叶子节点 (Leaf)**:
-    ```bash
-    python Code/Experiment3/leaf.py
-    ```
-
-### Experiment 4 : 多跳动态路由
-**功能说明**：
-实现网络层核心功能。所有节点运行 **DV (距离向量)** 路由算法，自动发现邻居、交换路由表并计算全网路径。支持**断线重连**与**毒性逆转**。
-*   支持命令: `table` (查看路由表), `send <ID> <Msg>` (发送消息)
-
-**快速启动**：
-```bash
-python Code/Experiment4/router.py
-```
-
-### Experiment 5 : 可靠传输协议
-**功能说明**：
-在动态路由的基础上，增加运输层可靠性保障。实现 **Stop-and-Wait (停等协议)**，具备 **CRC32校验**、**超时重传**、**三次握手建立连接** 等机制。
-*   支持命令: `corrupt <次数>` (模拟校验错误), `loss` (模拟丢包)
-
-**快速启动**：
-```bash
-python Code/Experiment5/reliable_router.py
-```
-
-### Experiment 6 : 网络管理工具
-**功能说明**：
-应用层综合实验。引入 **TTL (生存时间)** 处理，实现 ICMP 协议逻辑，提供网络诊断工具。
-
-*   支持命令: `ping <ID>` (测试连通性), `tracert <ID>` (路由追踪)
-
-**快速启动**：
-```bash
-python Code/Experiment6/network_app.py
-```
+### 协议栈架构
+*   **物理层 (Physical Layer)**: 使用 `pyserial` 库直接读写串口，模拟物理链路。
+*   **数据链路层 (Data Link Layer)**: 简单的帧封装与解封装，实现点对点传输。
+*   **网络层 (Network Layer)**: 实现 **距离向量 (Distance Vector)** 路由算法，支持多跳网络、路由收敛、毒性逆转。
+*   **运输层 (Transport Layer)**: 实现 **停等协议 (Stop-and-Wait)**，提供重传、ACK 确认、CRC32 校验等可靠传输机制。
+*   **应用层 (Data Layer)**: 提供了 **Ping** 和 **Traceroute** 等网络诊断工具。
 
 ---
 
-## 2. Web端可视化的启动方法
+## 2. 快速启动指令 (CLI)
 
-Web 界面提供了更直观的拓扑图和全网流量监控。系统已集成静态资源，无需安装 Node.js 即可运行。
+本节介绍如何通过命令行运行各个实验。**推荐使用重构后的 `Code_Refactored` 版本**。
 
-### 依赖环境
-*   **基础**: `Python 3.11+`
-*   **开发**: `Node.js` (仅修改前端代码时需要)
-
-### 启动步骤
-
-#### 方法一：快速启动 (推荐)
-直接运行后端即可自动托管前端页面。
+### 2.0 环境准备
+请确保已安装 Python 3.11+ 及串口驱动库。
 
 ```bash
-# cd Web-Interface/Backend
-pip install -r requirements.txt
-python main.py
+# 推荐使用 conda 创建独立环境
+conda create -n cnetwork python=3.11
+conda activate cnetwork
+
+# 安装依赖
+pip install pyserial
 ```
-> **启动成功后**: 在浏览器打开 [http://localhost:8000](http://localhost:8000)
->
-> **自定义端口**: 如果 8000 端口被占用，可在命令行指定端口启动：
-> ```bash
-> python main.py 10000  # 将在 10000 端口启动
-> ```
->
-> **端口占用清理方法**:
-> *   **Windows**:
->     ```powershell
->     netstat -ano | findstr :8000
->     taskkill /F /PID <PID>  # 将 <PID> 替换为上一条命令显示的数字
->     ```
-> *   **Mac / Linux**:
->     ```bash
->     lsof -ti:8000 | xargs kill -9
->     ```
 
-#### 组网核心概念 (必读)
-本系统的 Web 界面主要是为了**可视化**本机运行的实验节点。
+> **硬件连接提示**: 
+> 运行以下实验前，请确保您的电脑插上了 USB-TTL 串口模块，或者使用虚拟串口工具（如 VSPD）创建了成对的虚拟串口。
 
-*   **分布式实验 (标准模式)**: 
-    *   **每个人**都要在**自己电脑**上运行 `python main.py`。
-    *   这代表你启动了一个网络节点，控制**你电脑上**的 USB 串口。
-    *   大家通过**物理串口线**相互连接，而不是通过网页连接。
-    *   *网页端口 (8000/10000) 只是为了显示界面，各人可以用不同的端口，互不影响。*
+### 实验一：单机串口回环测试
+**目标**: 验证串口硬件好坏及驱动安装是否正确。请将串口模块的 TX 与 RX 引脚短接。
 
-*   **远程演示 (特殊模式)**:
-    *   如果有同学没带电脑，想看你操作，通过浏览器访问 `http://<你的IP>:8000`。
-    *   此时他看到和控制的是**你的**节点（相当于远程桌面）。
+```bash
+python Code_Refactored/Experiment1/main.py
+```
+*   **操作**: 启动后通过数字菜单选择串口，输入任意字符，若能收到相同回显即成功。
 
-#### 启动步骤 (标准实验流程)
+### 实验二：双机点对点通信 (C/S模式)
+**目标**: 模拟客户端与服务器通信。需准备两个串口（或两台电脑连接）。
 
-1.  **启动后端 (每个人都要做)**
-    所有参与实验的同学，各自在终端运行：
-    ```bash
-    # 默认使用 8000 端口
-    python Web-Interface/Backend/main.py
-    
-    # 如果 8000 报错被占用，可以换个端口(例如 10000)
-    python Web-Interface/Backend/main.py 10000
-    # 或者清理相关python进程
-    taskkill /F /IM python.exe  # windows
-    pkill -f python             # mac/linux
-    # 或者精准清理
-    ```
+**启动服务器**:
+```bash
+python Code_Refactored/Experiment2/server.py
+```
+**启动客户端**:
+```bash
+python Code_Refactored/Experiment2/client.py
+```
+*   **操作**: 客户端启动后，按提示选择串口和波特率，输入 `HELLO` 或 `TIME` 等命令与服务器交互。
 
-2.  **打开界面**
-    各自打开浏览器访问 **本机地址**:
-    *   `http://localhost:8000` (如果你是用默认端口启动)
-    *   `http://localhost:10000` (如果你指定了 10000)
+### 实验三：简单拓扑转发 (Root/Leaf)
+**目标**: 构建星型拓扑，Leaf 节点通过 Root 节点转发消息。
 
-3.  **开始实验**
-    *   点击网页下方的 Terminal。
-    *   输入 `4` 启动动态路由实验。
-    *   **注意**: 此时 Web 终端里的操作，就是在控制你本机的串口进行发包。
+**启动根节点 (Root/Switch)**:
+```bash
+python Code_Refactored/Experiment3/root.py
+```
+*   **配置**: Root 启动后，需按提示多次添加连接的 Leaf 端口，并绑定逻辑 ID（如 A, B）。
 
-#### 常见问题
-*   **问**: 我用 8000，同桌用 10000，我们能通信吗？
-    *   **答**: **能**。网页端口 (8000/10000) 只是给你自己看界面的。你们的通信是靠**串口线**连在一起的，跟网页端口没关系。
-*   **问**: 为什么我输了 `table` 看不到同桌的节点？
-    *   **答**: 检查串口线是否接好，检查是否都启动了实验脚本 (输入了 `4`)，检查是否都配置了正确的 ID。
-*   **问**: 网页访问出现 502 Bad Gateway 或无法连接？
-    *   **答**: 
-        1. 检查 Python 后端是否正在运行。
-        2. 如果是从另一台电脑访问，请确保 Windows 防火墙允许 `python.exe` 通过公用网络。
-        3. 尝试访问 `http://localhost:8000/api/health` 确认服务是否存活。
+**启动叶子节点 (Leaf)**:
+```bash
+python Code_Refactored/Experiment3/leaf.py
+```
+*   **配置**: Leaf 启动后连接到 Root，并设置自己的 ID。之后可发送消息给其他 ID。
 
-以 **Experiment 4 (动态路由)** 为例：
+### 实验四：多跳动态路由 (DV算法)
+**目标**: 实现分布式路由网络。每个节点运行相同的路由脚本，自动发现邻居并计算路由表。
 
-1.  **进入系统**: 浏览器打开网页，点击或聚焦下方的 **Terminal** 区域。
-2.  **选择实验**: 在菜单中输入 `4` 并回车，启动路由器脚本。
-3.  **初始化节点**:
-    *   根据终端提示输入本机 ID (例如 `A`)。
-    *   根据列表选择串口编号 (例如输入 `1` 选择第一个串口)。
-4.  **可视化交互**:
-    *   在终端输入 `table` 命令查看路由表。
-    *   **关键**: 此时上方拓扑图会自动根据路由表数据更新节点和连线。
-    *   尝试输入 `send B Hello` 发送数据，观察控制台输出。
-5.  **退出与切换**:
-    *   输入 `exit` 停止当前脚本，返回主菜单选择其他实验。
+```bash
+python Code_Refactored/Experiment4/router.py
+```
+*   **操作**: 
+    1. 输入本机 ID (如 `RouterA`)。
+    2. 在列表中**多选**通过该路由器连接的所有串口（输入逗号分隔的序号，如 `1,2`）。
+    3. 程序将自动进行邻居发现和 DV 广播。
+    4. 输入 `table` 查看实时路由表，输入 `send <DestID> <Msg>` 发送跨网段消息。
+
+### 实验五：可靠传输协议 (Transport Layer)
+**目标**: 在动态路由之上，增加可靠性（ACK、重传、校验）。
+
+```bash
+python Code_Refactored/Experiment5/reliable_router.py
+```
+*   **操作**: 
+    *   基础配置同实验四。
+    *   **发送命令**: `send <DestID> <Msg>` (会触发三次握手和停等传输)。
+    *   **模拟干扰**: 输入 `corrupt on` 开启校验错误模拟，验证超时重传机制。
+
+### 实验六：网络管理工具 (Ping/Traceroute)
+**目标**: 综合应用层实验，支持 TTL 处理。
+
+```bash
+python Code_Refactored/Experiment6/network_app.py
+```
+*   **操作**:
+    *   **Ping**: `ping <DestID>` (测试连通性和 RTT)。
+    *   **Traceroute**: `tracert <DestID>` (追踪路径上的每一跳路由)。
+
+---
+
+## 3. 可视化界面 (开发中)
+
+本项目包含一个基于 Web 的可视化监控界面，位于 `Web-Interface` 目录。
+
+> **状态说明**: 
+> 可视化模块目前正在进行适配性更新，以对接重构后的底层协议栈。当前版本可能无法完美展示 `Code_Refactored` 中的日志流。
+> 
+> 敬请期待后续更新版本，该版本将支持：
+> *   实时网络拓扑图绘制
+> *   数据包动画演示
+> *   Web端全功能控制台
+
+目前建议优先使用上述 **第2部分** 的命令行工具进行实验和调试。
+
